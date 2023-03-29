@@ -6,15 +6,10 @@ import akka.actor.Props;
 import scala.concurrent.duration.Duration;
 
 import java.io.Serializable;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.Random;
-import java.util.Set;
-import java.util.HashSet;
-import java.util.List;
-import java.util.ArrayList;
 import java.lang.Thread;
 import java.lang.InterruptedException;
-import java.util.Collections;
 
 
 // The bank branch actor
@@ -26,12 +21,8 @@ public class Bank extends AbstractActor {
   private Random rnd = new Random();
 
   private boolean snapshotInitiator = false;    // the node is a snapshot initiator
-  //private boolean stateCaptured = false;        // snapshot in progress
-  //private int capturedBalance = 0;              // captured state (balance)
-  //private int moneyInTransit = 0;               // "in-transit" messages (money)
-  
-  // set of peers we received a token from 
-  //private Set<ActorRef> tokensReceived = new HashSet<>();
+
+  private HashMap<Integer,Snapshot> snapshots=new HashMap<>();
 
   /*-- Actor constructors --------------------------------------------------- */
   public Bank(int id, boolean snapshotInitiator) {
@@ -100,7 +91,7 @@ public class Bank extends AbstractActor {
   }
 
   // send tokens to all the peers
-  private void sendTokens() {
+  private void sendTokens(int snapId) {
     Token t = new Token(snapId);
     for (ActorRef p: peers) {
       // System.out.println("Bank " + id + " sending token to" + p);
@@ -109,11 +100,15 @@ public class Bank extends AbstractActor {
   }
 
   // capture the current state of the bank
-  private void captureState() {
-    System.out.println("Bank " + id + " snapId: "+ snapId + " state: " + balance);
-
+  private void captureState(int snapid) {
+    Snapshot s=new Snapshot();
+    s.capturedBalance=this.balance;
+    if(!this.snapshotInitiator)
+      s.tokensReceived.add(getSender());
+    this.snapshots.put(snapid,s);
     // TODO 1: save current balance and enter snapshot mode
     // TODO note: print your state only after the end of the snapshot protocol for this node
+    //System.out.println("Bank " + id + " snapId: "+ snapId + " state: " + balance);
   }
 
   private void onJoinGroupMsg(JoinGroupMsg msg) {
@@ -136,21 +131,41 @@ public class Bank extends AbstractActor {
     balance += msg.amount;
 
     // TODO 2: implement logic for Money messages during snapshot
+    for(Snapshot s: this.snapshots.values()){
+        if(!s.tokensReceived.contains(getSender())){
+          s.moneyInTransit+=msg.amount;
+        }
+    }
   }
 
   private void onToken(Token token) {
-    this.snapId = token.snapId;
-    captureState();
-
     // TODO 3: manage the first Token reception and the snapshot termination for this node
+    if(!this.snapshots.containsKey(token.snapId)){
+      captureState(token.snapId);
+      sendTokens(token.snapId);
+    }else{
+      // add token sender to tokensReceived
+      Snapshot s=this.snapshots.get(token.snapId);
+      if(!s.tokensReceived.contains(getSender())) {
+        s.tokensReceived.add(getSender());
+        if (s.tokensReceived.size() == this.peers.size()) {
+          System.out.println("Bank " + id + " snapId: " + token.snapId +
+                  " state: " + balance + " recorded :" + s.capturedBalance +
+                  " flowing : " + s.moneyInTransit);
+          this.snapshots.remove(token.snapId);
+        }
+      }
+    }
   }
 
   private void onStartSnapshot(StartSnapshot msg) {
     // we've been asked to initiate a snapshot
     // System.out.println("Bank " + id + " starting snapshot");
     snapId += 1;
-    captureState();
-    sendTokens();
+    if(snapId<10) {
+      captureState(snapId);
+      sendTokens(snapId);
+    }
   }
 
   // Here we define the mapping between the received message types
